@@ -6,7 +6,12 @@ const {
   convertToBase, 
   applyCharsetReplacement, 
   getUniquePosition, 
-  hashToBigInt 
+  hashToBigInt,
+  normalizeParams,
+  clampLength,
+  DEFAULT_PARAMS,
+  MIN_LENGTH,
+  MAX_LENGTH
 } = require('../background');
 
 const totalBase = [
@@ -139,5 +144,68 @@ describe("hashToBigInt", () => {
     const hash1 = await hashToBigInt("hello");
     const hash2 = await hashToBigInt("world");
     expect(hash1).not.toBe(hash2);
+  });
+});
+
+describe("clampLength", () => {
+  it("borne en dessous du minimum", () => {
+    expect(clampLength(1)).toBe(MIN_LENGTH);
+  });
+
+  it("borne au-dessus du maximum", () => {
+    expect(clampLength(99)).toBe(MAX_LENGTH);
+  });
+
+  it("accepte une valeur dans les bornes, y compris en chaîne", () => {
+    expect(clampLength(30)).toBe(30);
+    expect(clampLength("30")).toBe(30);
+  });
+
+  it("retombe sur la valeur par défaut si la saisie n'est pas un nombre", () => {
+    expect(clampLength("")).toBe(DEFAULT_PARAMS.lengthNumber);
+    expect(clampLength(undefined)).toBe(DEFAULT_PARAMS.lengthNumber);
+  });
+});
+
+describe("normalizeParams", () => {
+  it("applique les valeurs par défaut quand rien n'est stocké", () => {
+    expect(normalizeParams({})).toEqual(DEFAULT_PARAMS);
+    expect(normalizeParams()).toEqual(DEFAULT_PARAMS);
+  });
+
+  it("conserve une longueur réglée par l'utilisateur", () => {
+    expect(normalizeParams({ lengthNumber: 30 }).lengthNumber).toBe(30);
+  });
+
+  it("migre les anciennes clés de stockage", () => {
+    // « lenghtNumber » (faute historique) et « length » (clé écrite par la
+    // popup d'une version précédente) doivent rester lisibles.
+    expect(normalizeParams({ lenghtNumber: 30 }).lengthNumber).toBe(30);
+    expect(normalizeParams({ length: 28 }).lengthNumber).toBe(28);
+  });
+
+  it("donne la priorité à la clé courante sur les clés héritées", () => {
+    expect(normalizeParams({ lengthNumber: 30, length: 12 }).lengthNumber).toBe(30);
+  });
+
+  it("préserve un booléen explicitement à false", () => {
+    const p = normalizeParams({ symState: false, chiState: false });
+    expect(p.symState).toBe(false);
+    expect(p.chiState).toBe(false);
+    expect(p.minState).toBe(true);
+  });
+});
+
+describe("generatePassword - longueur", () => {
+  it("respecte une longueur de 30", async () => {
+    const result = await generatePassword('site', 'clef', 30, true, true, true, true);
+    expect(result.mdp).toHaveLength(30);
+  });
+
+  it("borne une longueur hors limites au lieu de produire n'importe quoi", async () => {
+    expect((await generatePassword('site', 'clef', 99, true, true, true, true)).mdp)
+      .toHaveLength(MAX_LENGTH);
+    expect((await generatePassword('site', 'clef', 1, true, true, true, true)).mdp)
+      .toHaveLength(MIN_LENGTH);
   });
 });

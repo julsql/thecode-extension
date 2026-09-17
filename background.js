@@ -7,56 +7,136 @@ let psl = [];
 // Promise réutilisable : on attendra son résolution avant d'utiliser `psl`,
 // pour qu'un appel à getRegistrableDomain pendant le chargement ne tombe
 // jamais sur une liste vide.
-const pslReady = fetch(browser.runtime.getURL("data/public_suffix_list.dat"))
-  .then(r => r.text())
-  .then(t => {
-    psl = t.split('\n')
-      .map(l => l.trim())
-      .filter(l => l && !l.startsWith('//'));
-  })
-  .catch(err => {
-    console.error("TheCode: échec du chargement de la PSL", err);
-  });
+// Hors contexte d'extension (suite de tests Node), il n'y a pas de
+// `browser.runtime` : on résout immédiatement plutôt que de faire échouer le
+// chargement du module, pour que les fonctions pures restent testables.
+const pslReady = browser?.runtime?.getURL
+  ? fetch(browser.runtime.getURL("data/public_suffix_list.dat"))
+      .then(r => r.text())
+      .then(t => {
+        psl = t.split('\n')
+          .map(l => l.trim())
+          .filter(l => l && !l.startsWith('//'));
+      })
+      .catch(err => {
+        console.error("TheCode: échec du chargement de la PSL", err);
+      })
+  : Promise.resolve();
 
-let data = {
-    encodingKey: null,
-    lenghtNumber: 20,
+// Bornes et valeurs par défaut des paramètres de génération, partagées avec
+// la popup (cf. popup.js) et alignées sur les apps natives.
+const MIN_LENGTH = 4;
+const MAX_LENGTH = 40;
+const DEFAULT_PARAMS = {
+    lengthNumber: 20,
     minState: true,
     majState: true,
     symState: true,
     chiState: true,
 };
 
+// La clé reste volontairement en mémoire seule : elle disparaît avec le
+// service worker et n'est jamais écrite sur disque.
+let encodingKey = null;
+
+// Les paramètres, eux, DOIVENT survivre au recyclage du service worker MV3 :
+// sinon une longueur réglée à 30 dans la popup retombait à 20 dès que le
+// worker était déchargé, et le menu injecté dans la page (content.js, qui
+// n'envoie pas d'options) générait un mot de passe avec la mauvaise longueur.
+// `browser.storage.local` est donc la source de vérité ; `params` n'en est
+// qu'un cache local, réhydraté au démarrage et sur chaque changement.
+let params = { ...DEFAULT_PARAMS };
+
+function clampLength(value) {
+    const n = parseInt(value, 10);
+    if (Number.isNaN(n)) return DEFAULT_PARAMS.lengthNumber;
+    return Math.min(MAX_LENGTH, Math.max(MIN_LENGTH, n));
+}
+
+/// Normalise ce qui sort du stockage : anciennes clés (`length`,
+/// `lenghtNumber`) incluses, pour ne pas perdre les réglages déjà enregistrés
+/// par une version précédente de l'extension.
+function normalizeParams(raw = {}) {
+    const rawLength = raw.lengthNumber ?? raw.lenghtNumber ?? raw.length;
+    return {
+        lengthNumber: rawLength === undefined
+            ? DEFAULT_PARAMS.lengthNumber
+            : clampLength(rawLength),
+        minState: raw.minState ?? DEFAULT_PARAMS.minState,
+        majState: raw.majState ?? DEFAULT_PARAMS.majState,
+        symState: raw.symState ?? DEFAULT_PARAMS.symState,
+        chiState: raw.chiState ?? DEFAULT_PARAMS.chiState,
+    };
+}
+
+/// Relit les paramètres depuis le stockage. Appelé avant chaque génération :
+/// c'est ce qui garantit qu'un réglage modifié dans la popup s'applique
+/// immédiatement, y compris après un redémarrage du service worker.
+async function loadParams() {
+    const store = browser?.storage?.local;
+    if (!store) return params;
+    try {
+        const stored = await store.get([
+            'lengthNumber', 'lenghtNumber', 'length',
+            'minState', 'majState', 'symState', 'chiState',
+        ]);
+        params = normalizeParams(stored);
+    } catch (e) {
+        console.error("TheCode: échec de la lecture des paramètres", e);
+    }
+    return params;
+}
+
+async function saveParams(next) {
+    params = normalizeParams(next);
+    const store = browser?.storage?.local;
+    if (!store) return params;
+    try {
+        await store.set(params);
+        // Nettoie les clés héritées pour ne plus jamais les relire.
+        await store.remove(['lenghtNumber', 'length']);
+    } catch (e) {
+        console.error("TheCode: échec de l'écriture des paramètres", e);
+    }
+    return params;
+}
+
+// Réhydratation au (re)démarrage du worker + suivi des changements, pour que
+// deux popups ou fenêtres ouvertes restent cohérentes.
+loadParams();
+browser?.storage?.onChanged?.addListener((changes, area) => {
+    if (area !== 'local') return;
+    const touched = Object.keys(changes).some(k => k in DEFAULT_PARAMS
+        || k === 'lenghtNumber' || k === 'length');
+    if (touched) loadParams();
+});
+
 browser?.runtime.onMessage.addListener((request, sender, sendResponse) => {
     (async () => {
         if (request.action === 'checkEncodingKey') {
-            sendResponse({ hasEncodingKey: !!data.encodingKey });
+            sendResponse({ hasEncodingKey: !!encodingKey });
         } else if (request.action === 'getEncodingKey') {
-            sendResponse({ encodingKey: data.encodingKey });
+            sendResponse({ encodingKey });
         } else if (request.action === 'setEncodingKey') {
             try {
-                data.encodingKey = request.encodingKey;
+                encodingKey = request.encodingKey;
                 sendResponse({ ok: true });
             } catch (e) {
                 sendResponse({ ok: false, error: e.message });
             }
+        } else if (request.action === 'getParams') {
+            sendResponse({ ok: true, params: await loadParams() });
         } else if (request.action === 'setParams') {
             try {
-                data.lenghtNumber = request.data.lenghtNumber;
-                data.minState = request.data.minState;
-                data.majState = request.data.majState;
-                data.symState = request.data.symState;
-                data.chiState = request.data.chiState;
-                sendResponse({ ok: true });
+                sendResponse({ ok: true, params: await saveParams(request.data) });
             } catch (e) {
                 sendResponse({ ok: false, error: e.message });
             }
         } else if (request.action === 'clearEncodingKey') {
-            data.encodingKey = null;
+            encodingKey = null;
             sendResponse({ ok: true });
         } else if (request.action === 'generatePassword') {
-            const { options } = request;
-            const res = await generatePasswordForUrl(request.url || '', options);
+            const res = await generatePasswordForUrl(request.url || '');
             sendResponse(res);
         } else if (request.action === 'openPopup') {
             try {
@@ -84,17 +164,15 @@ browser?.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 // Code
 
-async function generatePasswordForUrl(url, options = {}) {
-    if (!data.encodingKey) {
+async function generatePasswordForUrl(url) {
+    if (!encodingKey) {
         return { error: "Aucune clé n'est définie. Ouvre l'extension TheCode et entre ta clé." };
     }
-    if (data.lenghtNumber < 4) {
-        return { error: "La longueur doit être supérieur à 4" };
-    }
-    if (data.lenghtNumber > 40) {
-        return { error: "La longueur doit être inférieure à 40" };
-    }
-    if (!data.minState && !data.majState && !data.symState && !data.chiState) {
+    // Relecture systématique : le service worker peut avoir été recyclé depuis
+    // le dernier réglage, et content.js n'envoie aucune option.
+    const { lengthNumber, minState, majState, symState, chiState } = await loadParams();
+
+    if (!minState && !majState && !symState && !chiState) {
         return { error: "Il faut choisir des caractères" };
     }
     try {
@@ -103,7 +181,7 @@ async function generatePasswordForUrl(url, options = {}) {
         const hostname = u.hostname;
         const domain = getRegistrableDomain(hostname)
 
-        const { mdp, security, bits, color } = await generatePassword(domain, data.encodingKey, data.lenghtNumber, data.minState, data.majState, data.symState, data.chiState);
+        const { mdp, security, bits, color } = await generatePassword(domain, encodingKey, lengthNumber, minState, majState, symState, chiState);
 
         return { password: mdp, site: domain, security, bits, color };
     } catch (err) {
@@ -133,10 +211,9 @@ async function generatePassword(site, key, length, useLower, useUpper, useSymbol
     if (charsetGroups.length === 0 || (!site && !key)) {
         return buildPasswordResult(null, "Aucune", 0, "#FE0101");
     }
-    let newLength = length;
-    if (newLength > 40) {
-        newLength = 40;
-    }
+    // Garde-fou : la longueur est bornée ici aussi, pour que la fonction reste
+    // sûre quel que soit son appelant (popup, content script, tests).
+    const newLength = Math.min(MAX_LENGTH, Math.max(MIN_LENGTH, parseInt(length, 10) || MIN_LENGTH));
 
     const entropyBits = calculateEntropyBits(charsetGroups, newLength);
     const securityInfo = getSecurityLevel(entropyBits);
@@ -274,5 +351,5 @@ async function hashToBigInt(input) {
 
 
 if (typeof module !== "undefined") {
-    module.exports = { generatePassword, buildCharset, calculateEntropyBits, getSecurityLevel, convertToBase, applyCharsetReplacement, getUniquePosition, hashToBigInt };
+    module.exports = { generatePassword, buildCharset, calculateEntropyBits, getSecurityLevel, convertToBase, applyCharsetReplacement, getUniquePosition, hashToBigInt, normalizeParams, clampLength, MIN_LENGTH, MAX_LENGTH, DEFAULT_PARAMS };
 }
