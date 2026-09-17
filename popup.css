@@ -110,3 +110,9 @@ button {
 @media (prefers-color-scheme: dark) {
     /* Dark Mode styles go here. */
 }
+
+.hint {
+    margin: 0 0 8px;
+    font-size: 12px;
+    opacity: 0.75;
+}

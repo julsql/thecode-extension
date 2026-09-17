@@ -38,47 +38,42 @@ window.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    browser.storage.local.get(
-        ['length', 'minState', 'majState', 'chiState', 'symState'],
-        data => {
-            const defaultOptions = { length: 20, minState: true, majState: true, chiState: true, symState: true };
-            const options = { ...defaultOptions, ...data };
-
-            lengthInput.value = options.length;
-            minInput.checked = options.minState;
-            majInput.checked = options.majState;
-            symInput.checked = options.symState;
-            chiInput.checked = options.chiState;
-            
-            updateParams(options)
-        }
-    );
-    
+    // Les paramètres sont lus depuis le background, seul détenteur de la
+    // source de vérité (browser.storage.local) : la popup ne fait que les
+    // afficher et les renvoyer quand l'utilisateur les modifie.
+    browser.runtime.sendMessage({ action: 'getParams' }, (resp) => {
+        applyParams((resp && resp.params) || {});
+    });
 });
 
+function applyParams(params) {
+    if (params.lengthNumber !== undefined) lengthInput.value = params.lengthNumber;
+    if (params.minState !== undefined) minInput.checked = params.minState;
+    if (params.majState !== undefined) majInput.checked = params.majState;
+    if (params.symState !== undefined) symInput.checked = params.symState;
+    if (params.chiState !== undefined) chiInput.checked = params.chiState;
+}
 
+/// Enregistre les paramètres (le background les persiste et les renvoie
+/// normalisés / bornés), puis régénère l'aperçu si une clef est disponible.
 function updateParams(options) {
-    browser.runtime.sendMessage({ action: 'setParams', data: {
-        lenghtNumber: options.length,
-        minState: options.minState,
-        majState: options.majState,
-        symState: options.symState,
-        chiState: options.chiState,
-    } }, (resp) => {
-        if (!resp | !resp.ok) {
+    browser.runtime.sendMessage({ action: 'setParams', data: options }, (resp) => {
+        if (!resp || !resp.ok) {
             statusDiv.style.color = 'red';
-            statusDiv.textContent = 'Erreur: ' + (resp && resp.error || 'n/a');
-        } else {
-            if (passInput.value) {
-                generatePassword();
-            }
+            statusDiv.textContent = 'Erreur: ' + ((resp && resp.error) || 'n/a');
+            return;
+        }
+        // Reflète la valeur réellement retenue (ex. 99 saisi → borné à 40).
+        applyParams(resp.params);
+        if (passInput.value) {
+            generatePassword();
         }
     });
 }
 
 function getParams() {
     return {
-        length: lengthInput.value,
+        lengthNumber: lengthInput.value,
         minState: minInput.checked,
         majState: majInput.checked,
         symState: symInput.checked,
@@ -87,9 +82,24 @@ function getParams() {
 }
 
 
-[lengthInput, minInput, majInput, symInput, chiInput].forEach(input => {
+[minInput, majInput, symInput, chiInput].forEach(input => {
     input.addEventListener('change', () => updateParams(getParams()));
 });
+
+// Pour la longueur on écoute `input` (et non `change`) : le réglage est
+// enregistré dès la frappe, sans attendre que le champ perde le focus — la
+// popup peut être fermée juste après. On n'enregistre qu'une valeur déjà dans
+// les bornes, sinon une saisie intermédiaire (« 3 » en tapant « 30 ») serait
+// persistée puis ramenée à 4.
+lengthInput.addEventListener('input', () => {
+    const n = parseInt(lengthInput.value, 10);
+    if (!Number.isNaN(n) && n >= 4 && n <= 40) {
+        updateParams(getParams());
+    }
+});
+// Filet de sécurité à la sortie du champ : une valeur hors bornes ou vide est
+// renvoyée au background, qui la borne et nous retourne la valeur retenue.
+lengthInput.addEventListener('blur', () => updateParams(getParams()));
 
 // Afficher / masquer la clef
 toggleBtn.addEventListener('click', () => {
@@ -118,13 +128,6 @@ function setPassword() {
     if (!pass) {
         return;
     }
-
-    browser.runtime.sendMessage({ action: 'getSharedValues' }, (resp) => {
-        if (pass === resp.encodingKey) {
-            passInput.value = resp.encodingKey;
-            return;
-        }
-    })
 
     statusDiv.style.color = 'black';
     statusDiv.textContent = 'Dérivation en cours...';
@@ -169,16 +172,9 @@ generateBtn.addEventListener('click', () => {
 });
 
 function generatePassword() {
-    const length = parseInt(document.getElementById('length').value, 10);
-    const minState = document.getElementById('lowercase').checked;
-    const majState = document.getElementById('uppercase').checked;
-    const chiState = document.getElementById('numbers').checked;
-    const symState = document.getElementById('symbols').checked;
-
-    // Sauvegarde automatique des options
-    browser.storage.local.set({ length, minState, majState, chiState, symState });
-
-    // Récupération de l'URL de l'onglet actif
+    // Aucune option n'est transmise : le background relit les paramètres
+    // persistés, exactement comme pour le menu injecté dans la page. C'est ce
+    // qui garantit un mot de passe identique des deux côtés.
     browser.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (!tabs || !tabs.length) return;
         const tab = tabs[0];
@@ -187,8 +183,7 @@ function generatePassword() {
         browser.runtime.sendMessage(
             {
                 action: 'generatePassword',
-                url: tab.url,
-                options: { length, minState, majState, chiState, symState }
+                url: tab.url
             },
             (response) => {
                 if (response.error) {

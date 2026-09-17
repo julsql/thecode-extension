@@ -27,9 +27,11 @@
     <!-- Paramètres avancés -->
     <div class="advanced-wrapper">
         <h3>Paramètres avancés</h3>
+        <p class="hint">Ces réglages sont enregistrés et s'appliquent à tous les mots de passe
+            générés, y compris depuis le menu affiché dans les pages.</p>
         <label>
             Longueur :
-            <input type="number" id="length" min="4" max="40" value="20" />
+            <input type="number" id="length" min="4" max="40" step="1" value="20" />
         </label>
         <div class="checkbox-group">
             <label><input type="checkbox" id="lowercase" checked> Minuscules</label>
@@ -56,8 +58,6 @@
     </p>
     <p id="passwordSecurityContainer">Sécurité : <span id="passwordSecurity"></span></p>
     <p id="errorContainer">Erreur : <span id="error"></span></p>
-
-    <script src="popup.js"></script>
 </body>
 
 </html>
