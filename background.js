@@ -103,7 +103,7 @@ async function saveParams(next) {
 
 // Réhydratation au (re)démarrage du worker + suivi des changements, pour que
 // deux popups ou fenêtres ouvertes restent cohérentes.
-const paramsReady = loadParams();
+loadParams();
 browser?.storage?.onChanged?.addListener((changes, area) => {
     if (area !== 'local') return;
     const touched = Object.keys(changes).some(k => k in DEFAULT_PARAMS
@@ -170,7 +170,6 @@ async function generatePasswordForUrl(url) {
     }
     // Relecture systématique : le service worker peut avoir été recyclé depuis
     // le dernier réglage, et content.js n'envoie aucune option.
-    await paramsReady;
     const { lengthNumber, minState, majState, symState, chiState } = await loadParams();
 
     if (!minState && !majState && !symState && !chiState) {

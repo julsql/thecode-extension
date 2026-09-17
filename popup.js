@@ -15,6 +15,10 @@ const passwordSecurityContainer = document.getElementById('passwordSecurityConta
 const errorContainer = document.getElementById('errorContainer');
 
 const lengthInput = document.getElementById('length');
+// Bornes lues sur le champ lui-même, pour ne pas les redéclarer ici en plus
+// du HTML et du background (qui reste l'autorité : il borne ce qu'on envoie).
+const MIN_LENGTH = parseInt(lengthInput.min, 10);
+const MAX_LENGTH = parseInt(lengthInput.max, 10);
 const minInput = document.getElementById('lowercase');
 const majInput = document.getElementById('uppercase');
 const symInput = document.getElementById('symbols');
@@ -93,7 +97,7 @@ function getParams() {
 // persistée puis ramenée à 4.
 lengthInput.addEventListener('input', () => {
     const n = parseInt(lengthInput.value, 10);
-    if (!Number.isNaN(n) && n >= 4 && n <= 40) {
+    if (!Number.isNaN(n) && n >= MIN_LENGTH && n <= MAX_LENGTH) {
         updateParams(getParams());
     }
 });
